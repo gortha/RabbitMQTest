@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
@@ -22,7 +23,10 @@ namespace RabbitMQTest.QueueHandling
         private readonly IList<Type> _messageTypes;
         private readonly IDictionary<string, List<Type>> _messageHandlers;
         private readonly IDictionary<string, IModel> _consumerChannels;
-        const string EXCHANGE_NAME = "mymessage_bus";
+        private const string EXCHANGE_NAME = "mymessage_bus";
+        private const string ERROR_SUFIX = "_error";
+        private static string EXCHANGE_ERROR_NAME = $"{EXCHANGE_NAME}{ERROR_SUFIX}";
+        private const int MAX_RETRY_COUNT = 3;
         public MessageBusRabbitMQ(IRabbitMQPersistentConnection rabbitMQPersistentConnection, IServiceScopeFactory serviceScopeFactory)
         {
             _rabbitMQPersistentConnection = rabbitMQPersistentConnection;
@@ -41,16 +45,47 @@ namespace RabbitMQTest.QueueHandling
 
             using (var channel = _rabbitMQPersistentConnection.CreateModel())
             {
+                string messageTypeName = message.GetType().Name;
+                channel.ExchangeDeclare(exchange: EXCHANGE_NAME, type: ExchangeType.Direct, durable: true);
 
-                channel.ExchangeDeclare(exchange: EXCHANGE_NAME, type: "direct");
                 channel.QueueDeclare(queue: queueName, durable: true, exclusive: false, autoDelete: false, null);
                 var properties = channel.CreateBasicProperties();
                 properties.DeliveryMode = 2; // persistent
 
                 var msg = JsonConvert.SerializeObject(message);
                 var body = Encoding.UTF8.GetBytes(msg);
-                var messageTypeName = message.GetType().Name;
+                
                 channel.BasicPublish(exchange: EXCHANGE_NAME, routingKey: messageTypeName, properties, body);
+            }
+        }
+
+        public void BindErrorQueueWithDeadLetterExchangeStrategy<T>(string sourceQueueName, int timeToLive) where T : Message
+        {
+            if (!_rabbitMQPersistentConnection.IsConnected)
+            {
+                _rabbitMQPersistentConnection.TryConnect();
+            }
+
+            using (var channel = _rabbitMQPersistentConnection.CreateModel())
+            {
+                // Declare Error queue
+                var errorQueueName = $"{sourceQueueName}{ERROR_SUFIX}";
+                var sourceRoutingKey = typeof(T).Name;
+                var errorRoutingKey = $"{sourceRoutingKey}{ERROR_SUFIX}";
+                channel.ExchangeDeclare(exchange: EXCHANGE_ERROR_NAME, type: ExchangeType.Direct, durable: true);
+
+                // Bind Dead Letter Exchange and RoutingKey
+                var arguments = new Dictionary<string, object>()
+                {
+                    {"x-message-ttl", timeToLive },
+                    {"x-dead-letter-exchange", EXCHANGE_NAME },
+                    {"x-dead-letter-routing-key", sourceRoutingKey },
+                };
+
+                channel.QueueDeclare(queue: errorQueueName, durable: true, exclusive: false, autoDelete: false, arguments);
+                channel.QueueBind(queue: errorQueueName,
+                                      exchange: EXCHANGE_ERROR_NAME,
+                                      routingKey: errorRoutingKey);
             }
         }
 
@@ -82,12 +117,15 @@ namespace RabbitMQTest.QueueHandling
 
             StartBasicConsume(messageTypeName, queueName);
         }
-        
+
         private void StartBasicConsume(string messageTypeName, string queueName)
         {
+            (IModel Channel, string queueName) achannel = (null, null);
             if (!_consumerChannels.TryGetValue(messageTypeName, out var channel))
             {
-                channel = CreateConsumerChannel(messageTypeName, queueName);
+                //channel = CreateConsumerChannel(messageTypeName, queueName);
+                achannel = CreateConsumerChannel(messageTypeName, queueName);
+                channel = achannel.Channel;
             }
             if (channel == null)
             {
@@ -98,12 +136,15 @@ namespace RabbitMQTest.QueueHandling
             var consumer = new AsyncEventingBasicConsumer(channel);
             //var consumer = new ConsumerFailingOnConsumeOk(channel);
             consumer.Received += Consumer_Received;
+            queueName = achannel.queueName;
             channel.BasicConsume(queueName, autoAck: false, consumer);
 
         }
 
         private async Task Consumer_Received(object sender, BasicDeliverEventArgs e)
         {
+            var channel = ((AsyncEventingBasicConsumer)sender).Model;
+
             try
             {
                 var messageId = e.BasicProperties.MessageId;
@@ -130,20 +171,60 @@ namespace RabbitMQTest.QueueHandling
                         await (Task)handlerGenericType.GetMethod("Handle").Invoke(handler, new object[] { msg });
 
                     }
-                }
+                }                
             }
             catch (Exception ex)
             {
                 //throw;
+                //channel.BasicNack(e.DeliveryTag, false, false);                
+                Requeue(e.DeliveryTag, e.Exchange, e.RoutingKey, e.BasicProperties, e.Body.ToArray());
             }
-            var channel = ((AsyncEventingBasicConsumer)sender).Model;
+
             //var channel = ((ConsumerFailingOnConsumeOk)sender).Model;
             channel.BasicAck(e.DeliveryTag, multiple: false);
         }
 
 
+        private void Requeue(ulong deliveryTag, string exchange, string routingKey, IBasicProperties properties, byte[] body)
+        {
+            int retryCount = GetRetryCount(properties);
+            Console.WriteLine($"Retry count: {retryCount}");
+            if (!_rabbitMQPersistentConnection.IsConnected)
+            {
+                _rabbitMQPersistentConnection.TryConnect();
+            }
 
-        private IModel CreateConsumerChannel(string messageTypeName, string queueName)
+            using (var channel = _rabbitMQPersistentConnection.CreateModel())
+            {
+                channel.ConfirmSelect();
+                if (retryCount < MAX_RETRY_COUNT)
+                {
+                    SetRetryCount(properties, ++retryCount);
+                    properties.DeliveryMode = 2; // persistent
+                    channel.BasicPublish($"{exchange}{ERROR_SUFIX}", $"{routingKey}{ERROR_SUFIX}", properties, body);
+                }
+                else
+                {
+                    // reject the message to dead letter queue.
+                    //channel.BasicNack(deliveryTag, false, false);
+                    // Log Fatal with info message - exchange - routingKey
+                }
+            }
+        }
+
+        private int GetRetryCount(IBasicProperties properties)
+        {
+            // use the headers field of the message properties to keep track of 
+            // the number of retries
+            return (int?)properties.Headers?["Retries"] ?? 0;
+        }
+        private void SetRetryCount(IBasicProperties properties, int retryCount)
+        {
+            properties.Headers = properties.Headers ?? new Dictionary<string, object>();
+            properties.Headers["Retries"] = retryCount;
+        }
+
+        private (IModel Channel, string queueName) CreateConsumerChannel(string messageTypeName, string queueName)
         {
             if (!_rabbitMQPersistentConnection.IsConnected)
             {
@@ -151,8 +232,12 @@ namespace RabbitMQTest.QueueHandling
             }
 
             var channel = _rabbitMQPersistentConnection.CreateModel();
-            channel.ExchangeDeclare(EXCHANGE_NAME, type: "direct");
+            channel.ExchangeDeclare(EXCHANGE_NAME, type: ExchangeType.Direct, durable: true);
             channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false, null);
+
+            // For many consumer at the times
+            //queueName = channel.QueueDeclare().QueueName;
+
             channel.QueueBind(queue: queueName,
                                       exchange: EXCHANGE_NAME,
                                       routingKey: messageTypeName);
@@ -166,11 +251,14 @@ namespace RabbitMQTest.QueueHandling
                 }
 
                 model.Dispose();
-                model = CreateConsumerChannel(messageTypeName, queueName);
+                //model = CreateConsumerChannel(messageTypeName, queueName);
+                var aa = CreateConsumerChannel(messageTypeName, queueName);
+                model = aa.Channel;
+                queueName = aa.queueName;
                 StartBasicConsume(messageTypeName, queueName);
             };
             _consumerChannels[messageTypeName] = channel;
-            return channel;
+            return (channel, queueName);
         }
 
         private static int mycount = 0;

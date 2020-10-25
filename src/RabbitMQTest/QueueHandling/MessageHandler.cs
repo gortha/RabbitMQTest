@@ -17,6 +17,8 @@ namespace RabbitMQTest.QueueHandling
 
         public async Task Handle(MyMessage message)
         {
+            Console.WriteLine("Consumed " + message.Id);
+            throw new Exception("Errour");
             var id = await _myService.Execute(message);            
         }
     }
@@ -35,6 +37,22 @@ namespace RabbitMQTest.QueueHandling
         public Task Handle(MyMessage2 message)
         {
             return Task.CompletedTask;
+        }
+    }
+
+    public class MyMessageHandler3 : IMessageHandler<MyMessage>
+    {
+        private readonly IMyService _myService;
+
+        public MyMessageHandler3(IMyService myService)
+        {
+            _myService = myService;
+        }
+
+        public async Task Handle(MyMessage message)
+        {
+            throw new Exception("Errour");
+            var id = await _myService.Execute(message);
         }
     }
 }

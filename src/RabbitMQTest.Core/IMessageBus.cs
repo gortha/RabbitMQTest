@@ -7,5 +7,7 @@
         void Subscribe<T, TH>(string queueName)
             where T : Message
             where TH : IMessageHandler<T>;
+
+        void BindErrorQueueWithDeadLetterExchangeStrategy<T>(string sourceQueueName, int timeToLiveInMs) where T : Message;
     }
 }
