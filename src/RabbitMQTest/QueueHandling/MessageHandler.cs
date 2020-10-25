@@ -9,17 +9,29 @@ namespace RabbitMQTest.QueueHandling
     public class MyMessageHandler : IMessageHandler<MyMessage>
     {
         private readonly IMyService _myService;
-
-        public MyMessageHandler(IMyService myService)
+        private readonly IMessageBus _messageBus;
+        public MyMessageHandler(IMyService myService, IMessageBus messageBus)
         {
             _myService = myService;
+            _messageBus = messageBus;
         }
 
-        public async Task Handle(MyMessage message)
+        public async Task Handle(MyMessage message, int retryCount)
         {
-            Console.WriteLine("Consumed " + message.Id);
-            throw new Exception("Errour");
-            var id = await _myService.Execute(message);            
+            try
+            {
+                Console.WriteLine("Consumed " + message.Id);
+                throw new Exception("Errour");
+                var id = await _myService.Execute(message);
+            }
+            catch (Exception ex)
+            {
+                _messageBus.RetryPublish(new MyMessage()
+                {
+                    Content = "Nouveau " + DateTime.Now.ToShortDateString(),
+                    Id = message.Id
+                },  retryCount);
+            }
         }
     }
 
@@ -34,7 +46,7 @@ namespace RabbitMQTest.QueueHandling
     public class MyMessageHandler2 : IMessageHandler<MyMessage2>
     {
 
-        public Task Handle(MyMessage2 message)
+        public Task Handle(MyMessage2 message, int retryCount)
         {
             return Task.CompletedTask;
         }
@@ -49,7 +61,7 @@ namespace RabbitMQTest.QueueHandling
             _myService = myService;
         }
 
-        public async Task Handle(MyMessage message)
+        public async Task Handle(MyMessage message, int retryCount)
         {
             throw new Exception("Errour");
             var id = await _myService.Execute(message);

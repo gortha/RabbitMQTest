@@ -9,5 +9,7 @@
             where TH : IMessageHandler<T>;
 
         void BindErrorQueueWithDeadLetterExchangeStrategy<T>(string sourceQueueName, int timeToLiveInMs) where T : Message;
+        void RetryPublish<T>(T message, int retryCount, int retryMax = 3)
+            where T : Message;
     }
 }

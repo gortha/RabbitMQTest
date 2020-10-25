@@ -10,6 +10,6 @@ namespace RabbitMQTest.Core
     public interface IMessageHandler<in TMessage> : IMessageHandler
        where TMessage : Message
     {
-        Task Handle(TMessage message);
+        Task Handle(TMessage message, int retryCount);
     }
 }

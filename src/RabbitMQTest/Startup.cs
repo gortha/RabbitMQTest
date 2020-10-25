@@ -110,7 +110,7 @@ namespace RabbitMQTest
         {
             var messageBus = app.ApplicationServices.GetRequiredService<IMessageBus>();
             messageBus.Subscribe<MyMessage, MyMessageHandler>("my_firt_queue_d");
-            messageBus.BindErrorQueueWithDeadLetterExchangeStrategy<MyMessage>("my_firt_queue_d", 60000);
+            messageBus.BindErrorQueueWithDeadLetterExchangeStrategy<MyMessage>("my_firt_queue_d", 10000);
             messageBus.Subscribe<MyMessage2, MyMessageHandler2>("my_second_queue_d");
             
         }

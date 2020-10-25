@@ -59,6 +59,14 @@ namespace RabbitMQTest.QueueHandling
             }
         }
 
+        public void RetryPublish<T>(T message, int retryCount, int retryMax = MAX_RETRY_COUNT)
+            where T : Message
+        {
+            var msg = JsonConvert.SerializeObject(message);
+            var body = Encoding.UTF8.GetBytes(msg);
+            SendToErrorQueue(exchangeSource: EXCHANGE_NAME, routingKeySource: typeof(T).Name, body, retryCount, retryMax);
+        }
+
         public void BindErrorQueueWithDeadLetterExchangeStrategy<T>(string sourceQueueName, int timeToLive) where T : Message
         {
             if (!_rabbitMQPersistentConnection.IsConnected)
@@ -168,7 +176,7 @@ namespace RabbitMQTest.QueueHandling
                         }
                         var msg = JsonConvert.DeserializeObject(message, messageType);
                         var handlerGenericType = typeof(IMessageHandler<>).MakeGenericType(messageType);
-                        await (Task)handlerGenericType.GetMethod("Handle").Invoke(handler, new object[] { msg });
+                        await (Task)handlerGenericType.GetMethod("Handle").Invoke(handler, new object[] { msg, GetRetryCount(e.BasicProperties) });
 
                     }
                 }                
@@ -177,7 +185,7 @@ namespace RabbitMQTest.QueueHandling
             {
                 //throw;
                 //channel.BasicNack(e.DeliveryTag, false, false);                
-                Requeue(e.DeliveryTag, e.Exchange, e.RoutingKey, e.BasicProperties, e.Body.ToArray());
+                SendToErrorQueue(e.Exchange, e.RoutingKey, e.Body.ToArray(), GetRetryCount(e.BasicProperties));
             }
 
             //var channel = ((ConsumerFailingOnConsumeOk)sender).Model;
@@ -185,28 +193,29 @@ namespace RabbitMQTest.QueueHandling
         }
 
 
-        private void Requeue(ulong deliveryTag, string exchange, string routingKey, IBasicProperties properties, byte[] body)
-        {
-            int retryCount = GetRetryCount(properties);
-            Console.WriteLine($"Retry count: {retryCount}");
+        private void SendToErrorQueue(string exchangeSource, string routingKeySource, byte[] body, int retryCount, int retryMax = MAX_RETRY_COUNT)
+        {            
+            
             if (!_rabbitMQPersistentConnection.IsConnected)
             {
                 _rabbitMQPersistentConnection.TryConnect();
             }
 
             using (var channel = _rabbitMQPersistentConnection.CreateModel())
-            {
-                channel.ConfirmSelect();
-                if (retryCount < MAX_RETRY_COUNT)
+            {                
+                if (retryCount < retryMax)
                 {
+                    var properties = channel.CreateBasicProperties();
                     SetRetryCount(properties, ++retryCount);
+                    Console.WriteLine($"Retry count: {retryCount}");
                     properties.DeliveryMode = 2; // persistent
-                    channel.BasicPublish($"{exchange}{ERROR_SUFIX}", $"{routingKey}{ERROR_SUFIX}", properties, body);
+                    channel.BasicPublish($"{exchangeSource}{ERROR_SUFIX}", $"{routingKeySource}{ERROR_SUFIX}", properties, body);
                 }
                 else
                 {
                     // reject the message to dead letter queue.
                     //channel.BasicNack(deliveryTag, false, false);
+
                     // Log Fatal with info message - exchange - routingKey
                 }
             }
