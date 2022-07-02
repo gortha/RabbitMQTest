@@ -36,7 +36,7 @@ namespace RabbitMQTest.Controllers
             {
                 Id = ID,
                 Content = Guid.NewGuid().ToString()
-            }, "my_firt_queue_d");
+            }, "my_first_queue_d");
             _messageBus.Publish(new MyMessage2()
             {
                 Id = ID + 100,

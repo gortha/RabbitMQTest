@@ -109,8 +109,8 @@ namespace RabbitMQTest
         private void ConfigureEventBus(IApplicationBuilder app)
         {
             var messageBus = app.ApplicationServices.GetRequiredService<IMessageBus>();
-            messageBus.Subscribe<MyMessage, MyMessageHandler>("my_firt_queue_d");
-            messageBus.BindErrorQueueWithDeadLetterExchangeStrategy<MyMessage>("my_firt_queue_d", 10000);
+            messageBus.Subscribe<MyMessage, MyMessageHandler>("my_first_queue_d");
+            messageBus.BindErrorQueueWithDeadLetterExchangeStrategy<MyMessage>("my_first_queue_d", 10000);
             messageBus.Subscribe<MyMessage2, MyMessageHandler2>("my_second_queue_d");
             
         }
